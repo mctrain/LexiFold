@@ -30,6 +30,7 @@ export const PREPROCESSOR_LOWERCASE: number = 0x01;
 export const BACKEND_CPU_REFERENCE: number = 0x0001;
 export const BACKEND_MOCK_STEP: number = 0x0002;
 export const BACKEND_CPU_ORDER1: number = 0x0003;
+export const BACKEND_NATIVE_PPM: number = 0x0004;
 export const BACKEND_NPU: number = 0x0010;
 export const BACKEND_EXPERIMENTAL_ADAPTIVE: number = 0x00FF;
 
@@ -37,6 +38,7 @@ export const BACKEND_EXPERIMENTAL_ADAPTIVE: number = 0x00FF;
 export const MODEL_NONE: number = 0x0000;
 export const MODEL_ORDER0_ADAPTIVE: number = 0x0001;
 export const MODEL_ORDER1_ADAPTIVE: number = 0x0002;
+export const MODEL_PPM_ORDER3: number = 0x0003;
 
 // === Flags ===
 export const FLAG_NONE: number = 0x00;
@@ -173,6 +175,8 @@ export function getBackendName(backendId: number): string {
     return 'Order-0 (CPU)';
   } else if (backendId === BACKEND_CPU_ORDER1) {
     return 'Order-1 (CPU)';
+  } else if (backendId === BACKEND_NATIVE_PPM) {
+    return 'PPM Order-3 (Native)';
   } else if (backendId === BACKEND_MOCK_STEP) {
     return 'Mock Step Model';
   } else if (backendId === BACKEND_NPU) {
@@ -196,6 +200,7 @@ export function getAvailableBackends(): BackendOption[] {
   const list: BackendOption[] = [
     { id: BACKEND_CPU_REFERENCE, modelId: MODEL_ORDER0_ADAPTIVE, name: 'Order-0 (CPU)', description: 'Byte frequency tracking, ~62% on English' } as BackendOption,
     { id: BACKEND_CPU_ORDER1, modelId: MODEL_ORDER1_ADAPTIVE, name: 'Order-1 (CPU)', description: 'Previous-byte context, ~43% on English' } as BackendOption,
+    { id: BACKEND_NATIVE_PPM, modelId: MODEL_PPM_ORDER3, name: 'PPM Order-3 (Native)', description: 'Blended 4-layer context model, C++ engine' } as BackendOption,
   ];
   return list;
 }

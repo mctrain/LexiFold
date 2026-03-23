@@ -5,9 +5,10 @@
 import {
   PredictorBackend, FrequencyInfo, SymbolInfo,
   BYTE_VOCAB_SIZE, MAX_TOTAL_FREQ,
-  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1,
-  MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_NONE
+  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1, BACKEND_NATIVE_PPM,
+  MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_PPM_ORDER3, MODEL_NONE
 } from './Types';
+import nativeModule from 'liblexifold_native.so';
 
 // === CPU Reference Backend: Order-0 Adaptive Frequency Model ===
 // Tracks per-symbol counts, Laplace-smoothed (initial count=1 each).
@@ -214,6 +215,44 @@ export class Order1AdaptiveBackend implements PredictorBackend {
   }
 }
 
+// === Native PPM Backend ===
+// Bridges to C++ PPM Order-3 engine via N-API for high compression ratios.
+
+export class NativePPMBackend implements PredictorBackend {
+  readonly id: number = BACKEND_NATIVE_PPM;
+  readonly modelId: number = MODEL_PPM_ORDER3;
+  readonly name: string = 'PPM Order-3 (Native C++)';
+  readonly vocabSize: number = BYTE_VOCAB_SIZE;
+
+  constructor() {
+    this.reset();
+  }
+
+  reset(): void {
+    nativeModule.ppmReset();
+  }
+
+  getFrequency(symbol: number): FrequencyInfo {
+    const arr: number[] = nativeModule.ppmGetFrequency(symbol);
+    const fi: FrequencyInfo = { cumLow: arr[0], cumHigh: arr[1] };
+    return fi;
+  }
+
+  getTotal(): number {
+    return nativeModule.ppmGetTotal();
+  }
+
+  findSymbol(scaledValue: number): SymbolInfo {
+    const arr: number[] = nativeModule.ppmFindSymbol(scaledValue);
+    const si: SymbolInfo = { symbol: arr[0], cumLow: arr[1], cumHigh: arr[2] };
+    return si;
+  }
+
+  update(symbol: number): void {
+    nativeModule.ppmUpdate(symbol);
+  }
+}
+
 // === Backend Factory ===
 
 export function createBackend(backendId: number): PredictorBackend {
@@ -221,6 +260,8 @@ export function createBackend(backendId: number): PredictorBackend {
     return new CpuReferenceBackend();
   } else if (backendId === BACKEND_CPU_ORDER1) {
     return new Order1AdaptiveBackend();
+  } else if (backendId === BACKEND_NATIVE_PPM) {
+    return new NativePPMBackend();
   } else if (backendId === BACKEND_MOCK_STEP) {
     return new MockStepModelBackend();
   }

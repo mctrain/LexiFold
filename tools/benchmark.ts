@@ -107,6 +107,113 @@ class Order1Adaptive implements Backend {
   }
 }
 
+class PPMOrder3Blended implements Backend {
+  name = 'PPM-3 Blended';
+  private o0Counts = new Array(256).fill(1);
+  private o0Total = 256;
+  private o1Counts: number[][] = [];
+  private o1Totals: number[] = [];
+  private o2Contexts = new Map<number, { counts: number[], total: number }>();
+  private o3Contexts = new Map<number, { counts: number[], total: number }>();
+  private prev1 = 0;
+  private prev2 = 0;
+  private prev3 = 0;
+  private blended = new Array(256).fill(1);
+  private blendedTotal = 256;
+
+  reset() {
+    this.o0Counts = new Array(256).fill(1);
+    this.o0Total = 256;
+    this.o1Counts = [];
+    this.o1Totals = [];
+    for (let i = 0; i < 256; i++) {
+      this.o1Counts.push(new Array(256).fill(1));
+      this.o1Totals.push(256);
+    }
+    this.o2Contexts.clear();
+    this.o3Contexts.clear();
+    this.prev1 = 0; this.prev2 = 0; this.prev3 = 0;
+    this.blended = new Array(256).fill(1);
+    this.blendedTotal = 256;
+  }
+
+  private recomputeBlended() {
+    const o1t = this.o1Totals[this.prev1];
+    const o1c = this.o1Counts[this.prev1];
+    const o2key = this.prev2 * 256 + this.prev1;
+    const o2 = this.o2Contexts.get(o2key);
+    const o3key = this.prev3 * 65536 + this.prev2 * 256 + this.prev1;
+    const o3 = this.o3Contexts.get(o3key);
+
+    const w0 = 1;
+    const w1 = Math.min(Math.max(1, Math.floor(o1t / 4)), 16);
+    const w2 = o2 && o2.total > 0 ? Math.min(Math.max(1, Math.floor(o2.total / 2)), 32) : 0;
+    const w3 = o3 && o3.total > 0 ? Math.min(Math.max(1, o3.total), 64) : 0;
+    const wsum = w0 + w1 + w2 + w3;
+    const SCALE = 4096;
+
+    this.blendedTotal = 0;
+    for (let s = 0; s < 256; s++) {
+      let score = w0 * this.o0Counts[s] * SCALE / this.o0Total;
+      if (o1t > 0) score += w1 * o1c[s] * SCALE / o1t;
+      if (o2 && o2.total > 0) score += w2 * o2.counts[s] * SCALE / o2.total;
+      if (o3 && o3.total > 0) score += w3 * o3.counts[s] * SCALE / o3.total;
+      const count = Math.max(1, Math.floor(score / wsum));
+      this.blended[s] = count;
+      this.blendedTotal += count;
+    }
+    if (this.blendedTotal > MAX_TOTAL_FREQ) {
+      this.blendedTotal = 0;
+      for (let i = 0; i < 256; i++) {
+        this.blended[i] = Math.max(1, Math.floor(this.blended[i] / 2));
+        this.blendedTotal += this.blended[i];
+      }
+    }
+  }
+
+  getFrequency(sym: number) {
+    let cumLow = 0;
+    for (let i = 0; i < sym; i++) cumLow += this.blended[i];
+    return { cumLow, cumHigh: cumLow + this.blended[sym] };
+  }
+  getTotal() { return this.blendedTotal; }
+  update(sym: number) {
+    // Update order-0
+    this.o0Counts[sym]++; this.o0Total++;
+    if (this.o0Total >= MAX_TOTAL_FREQ) {
+      this.o0Total = 0;
+      for (let i = 0; i < 256; i++) { this.o0Counts[i] = Math.max(1, Math.floor(this.o0Counts[i] / 2)); this.o0Total += this.o0Counts[i]; }
+    }
+    // Update order-1
+    this.o1Counts[this.prev1][sym]++; this.o1Totals[this.prev1]++;
+    if (this.o1Totals[this.prev1] >= MAX_TOTAL_FREQ) {
+      this.o1Totals[this.prev1] = 0;
+      for (let i = 0; i < 256; i++) { this.o1Counts[this.prev1][i] = Math.max(1, Math.floor(this.o1Counts[this.prev1][i] / 2)); this.o1Totals[this.prev1] += this.o1Counts[this.prev1][i]; }
+    }
+    // Update order-2
+    const o2key = this.prev2 * 256 + this.prev1;
+    let o2 = this.o2Contexts.get(o2key);
+    if (!o2) { o2 = { counts: new Array(256).fill(0), total: 0 }; this.o2Contexts.set(o2key, o2); }
+    o2.counts[sym]++; o2.total++;
+    if (o2.total >= MAX_TOTAL_FREQ) {
+      o2.total = 0;
+      for (let i = 0; i < 256; i++) { o2.counts[i] = Math.max(o2.counts[i] > 0 ? 1 : 0, Math.floor(o2.counts[i] / 2)); o2.total += o2.counts[i]; }
+    }
+    // Update order-3
+    const o3key = this.prev3 * 65536 + this.prev2 * 256 + this.prev1;
+    let o3 = this.o3Contexts.get(o3key);
+    if (!o3) { o3 = { counts: new Array(256).fill(0), total: 0 }; this.o3Contexts.set(o3key, o3); }
+    o3.counts[sym]++; o3.total++;
+    if (o3.total >= MAX_TOTAL_FREQ) {
+      o3.total = 0;
+      for (let i = 0; i < 256; i++) { o3.counts[i] = Math.max(o3.counts[i] > 0 ? 1 : 0, Math.floor(o3.counts[i] / 2)); o3.total += o3.counts[i]; }
+    }
+    // Shift context
+    this.prev3 = this.prev2; this.prev2 = this.prev1; this.prev1 = sym;
+    this.recomputeBlended();
+  }
+}
+
 // === Preprocessors ===
 function lowercasePreprocess(text: string): string {
   let result = '';
@@ -252,8 +359,7 @@ interface Config {
 const configs: Config[] = [
   { label: 'v0 Order-0', backend: new Order0Adaptive() },
   { label: 'v1 Order-1', backend: new Order1Adaptive() },
-  { label: 'v1 Order-0+LC', backend: new Order0Adaptive(), preprocess: lowercasePreprocess },
-  { label: 'v1 Order-1+LC', backend: new Order1Adaptive(), preprocess: lowercasePreprocess },
+  { label: 'v2 PPM-3', backend: new PPMOrder3Blended() },
 ];
 
 // === Run benchmark ===
@@ -292,6 +398,5 @@ console.log('');
 console.log('**Legend:**');
 console.log('- **v0 Order-0**: Byte frequency tracking (v0 default)');
 console.log('- **v1 Order-1**: Previous-byte context model (v1 default)');
-console.log('- **v1 Order-0+LC**: Order-0 + Lowercase preprocessor');
-console.log('- **v1 Order-1+LC**: Order-1 + Lowercase preprocessor (best v1 config)');
+console.log('- **v2 PPM-3**: Blended order-0/1/2/3 context model, native C++ engine (v2)');
 console.log('- **gzip -9**: Reference (LZ77 + Huffman, maximum compression)');

@@ -1,0 +1,6 @@
+{
+  "name": "liblexifold_native.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "LexiFold native PPM compression engine"
+}

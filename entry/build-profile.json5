@@ -5,6 +5,11 @@
       "copyCodeResource": {
         "enable": false
       }
+    },
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/CMakeLists.txt",
+      "arguments": "-DCMAKE_BUILD_TYPE=Release",
+      "cppFlags": "-O2"
     }
   },
   "buildOptionSet": [
