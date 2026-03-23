@@ -1,8 +1,10 @@
 #include <napi/native_api.h>
 #include "ppm_engine.h"
+#include "neural_engine.h"
 
-// Global PPM engine instance (one per process, reset between chunks)
+// Global engine instances
 static PPMEngine g_engine;
+static GRUEngine g_neural;
 
 static napi_value PpmReset(napi_env env, napi_callback_info info) {
     g_engine.reset();
@@ -81,14 +83,114 @@ static napi_value PpmUpdate(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// === Neural GRU Backend ===
+
+static napi_value NnLoadModel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+    // Receive ArrayBuffer with weight data
+    void* data = nullptr;
+    size_t length = 0;
+    napi_get_arraybuffer_info(env, argv[0], &data, &length);
+
+    bool ok = g_neural.loadWeights(static_cast<const uint8_t*>(data), length);
+
+    napi_value result;
+    napi_get_boolean(env, ok, &result);
+    return result;
+}
+
+static napi_value NnReset(napi_env env, napi_callback_info info) {
+    g_neural.reset();
+    return nullptr;
+}
+
+static napi_value NnGetFrequency(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+    double symD = 0;
+    napi_get_value_double(env, argv[0], &symD);
+
+    int cumLow = 0, cumHigh = 0;
+    g_neural.getFrequency(static_cast<int>(symD), cumLow, cumHigh);
+
+    napi_value result;
+    napi_create_array_with_length(env, 2, &result);
+    napi_value v0, v1;
+    napi_create_double(env, static_cast<double>(cumLow), &v0);
+    napi_create_double(env, static_cast<double>(cumHigh), &v1);
+    napi_set_element(env, result, 0, v0);
+    napi_set_element(env, result, 1, v1);
+    return result;
+}
+
+static napi_value NnGetTotal(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_create_double(env, static_cast<double>(g_neural.getTotal()), &result);
+    return result;
+}
+
+static napi_value NnFindSymbol(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+    double svD = 0;
+    napi_get_value_double(env, argv[0], &svD);
+
+    int symbol = 0, cumLow = 0, cumHigh = 0;
+    g_neural.findSymbol(static_cast<int>(svD), symbol, cumLow, cumHigh);
+
+    napi_value result;
+    napi_create_array_with_length(env, 3, &result);
+    napi_value v0, v1, v2;
+    napi_create_double(env, static_cast<double>(symbol), &v0);
+    napi_create_double(env, static_cast<double>(cumLow), &v1);
+    napi_create_double(env, static_cast<double>(cumHigh), &v2);
+    napi_set_element(env, result, 0, v0);
+    napi_set_element(env, result, 1, v1);
+    napi_set_element(env, result, 2, v2);
+    return result;
+}
+
+static napi_value NnUpdate(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+    double symD = 0;
+    napi_get_value_double(env, argv[0], &symD);
+    g_neural.update(static_cast<int>(symD));
+    return nullptr;
+}
+
+static napi_value NnIsLoaded(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_get_boolean(env, g_neural.isLoaded(), &result);
+    return result;
+}
+
 // Module initialization
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
+        // PPM backend
         {"ppmReset", nullptr, PpmReset, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"ppmGetFrequency", nullptr, PpmGetFrequency, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"ppmGetTotal", nullptr, PpmGetTotal, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"ppmFindSymbol", nullptr, PpmFindSymbol, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"ppmUpdate", nullptr, PpmUpdate, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // Neural GRU backend
+        {"nnLoadModel", nullptr, NnLoadModel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnReset", nullptr, NnReset, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnGetFrequency", nullptr, NnGetFrequency, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnGetTotal", nullptr, NnGetTotal, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnFindSymbol", nullptr, NnFindSymbol, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnUpdate", nullptr, NnUpdate, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"nnIsLoaded", nullptr, NnIsLoaded, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

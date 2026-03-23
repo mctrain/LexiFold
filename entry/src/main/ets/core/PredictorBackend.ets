@@ -5,8 +5,10 @@
 import {
   PredictorBackend, FrequencyInfo, SymbolInfo,
   BYTE_VOCAB_SIZE, MAX_TOTAL_FREQ,
-  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1, BACKEND_NATIVE_PPM,
-  MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_PPM_ORDER3, MODEL_NONE
+  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1,
+  BACKEND_NATIVE_PPM, BACKEND_NEURAL_GRU,
+  MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_PPM_ORDER3,
+  MODEL_GRU_CHAR, MODEL_NONE
 } from './Types';
 import nativeModule from 'liblexifold_native.so';
 
@@ -253,6 +255,55 @@ export class NativePPMBackend implements PredictorBackend {
   }
 }
 
+// === Native Neural GRU Backend ===
+// Character-level GRU neural network inference via C++ N-API.
+// Requires model weights loaded via loadModel() before use.
+
+export class NativeNeuralBackend implements PredictorBackend {
+  readonly id: number = BACKEND_NEURAL_GRU;
+  readonly modelId: number = MODEL_GRU_CHAR;
+  readonly name: string = 'GRU Neural (Native C++)';
+  readonly vocabSize: number = BYTE_VOCAB_SIZE;
+  private modelLoaded: boolean = false;
+
+  constructor() {
+    this.modelLoaded = nativeModule.nnIsLoaded();
+  }
+
+  loadModel(weightsBuffer: ArrayBuffer): boolean {
+    this.modelLoaded = nativeModule.nnLoadModel(weightsBuffer);
+    return this.modelLoaded;
+  }
+
+  isModelLoaded(): boolean {
+    return this.modelLoaded;
+  }
+
+  reset(): void {
+    nativeModule.nnReset();
+  }
+
+  getFrequency(symbol: number): FrequencyInfo {
+    const arr: number[] = nativeModule.nnGetFrequency(symbol);
+    const fi: FrequencyInfo = { cumLow: arr[0], cumHigh: arr[1] };
+    return fi;
+  }
+
+  getTotal(): number {
+    return nativeModule.nnGetTotal();
+  }
+
+  findSymbol(scaledValue: number): SymbolInfo {
+    const arr: number[] = nativeModule.nnFindSymbol(scaledValue);
+    const si: SymbolInfo = { symbol: arr[0], cumLow: arr[1], cumHigh: arr[2] };
+    return si;
+  }
+
+  update(symbol: number): void {
+    nativeModule.nnUpdate(symbol);
+  }
+}
+
 // === Backend Factory ===
 
 export function createBackend(backendId: number): PredictorBackend {
@@ -262,6 +313,8 @@ export function createBackend(backendId: number): PredictorBackend {
     return new Order1AdaptiveBackend();
   } else if (backendId === BACKEND_NATIVE_PPM) {
     return new NativePPMBackend();
+  } else if (backendId === BACKEND_NEURAL_GRU) {
+    return new NativeNeuralBackend();
   } else if (backendId === BACKEND_MOCK_STEP) {
     return new MockStepModelBackend();
   }

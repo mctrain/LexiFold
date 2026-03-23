@@ -5,7 +5,8 @@ import { CompressionService } from '../service/CompressionService';
 import {
   CompressionResult, DecompressionResult, CompressWithDataResult,
   BackendOption, PreprocessorOption,
-  BACKEND_CPU_REFERENCE, MODEL_ORDER0_ADAPTIVE, PREPROCESSOR_IDENTITY
+  BACKEND_CPU_REFERENCE, BACKEND_NEURAL_GRU,
+  MODEL_ORDER0_ADAPTIVE, PREPROCESSOR_IDENTITY
 } from '../core/Types';
 
 const PRIMARY = '#0A59F7';
@@ -63,6 +64,28 @@ struct Index {
 
   aboutToAppear(): void {
     this.refreshInfo();
+  }
+
+  private loadNeuralWeights(): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const resourceMgr = context.resourceManager;
+      const weightsRaw: Uint8Array = resourceMgr.getRawFileContentSync('gru_weights.bin');
+      // Copy to a standalone ArrayBuffer to avoid structural typing issues
+      const buf: ArrayBuffer = new ArrayBuffer(weightsRaw.length);
+      const view = new Uint8Array(buf);
+      for (let i = 0; i < weightsRaw.length; i++) {
+        view[i] = weightsRaw[i];
+      }
+      const success: boolean = this.service.loadNeuralModel(buf);
+      if (!success) {
+        this.compressStatus = 'Failed to load neural model weights';
+        this.compressIsError = true;
+      }
+    } catch (e) {
+      this.compressStatus = `Model load error: ${(e as Error).message || String(e)}`;
+      this.compressIsError = true;
+    }
   }
 
   private refreshInfo(): void {
@@ -306,6 +329,10 @@ struct Index {
                 this.selectedBackendId = opt.id;
                 this.selectedModelId = opt.modelId;
                 this.service.setBackend(opt.id, opt.modelId);
+                // Auto-load neural model weights if needed
+                if (opt.id === BACKEND_NEURAL_GRU) {
+                  this.loadNeuralWeights();
+                }
                 this.refreshInfo();
               }
             })
