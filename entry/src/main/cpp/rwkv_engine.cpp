@@ -113,7 +113,7 @@ void RWKVEngine::matVecMul(std::vector<float>& out, const float* W, const std::v
     for (int r = 0; r < rows; r++) {
         float sum = 0;
         for (int c = 0; c < cols; c++) {
-            sum += W[c * rows + r] * x[c];
+            sum += W[r * cols + c] * x[c];
         }
         out[r] = sum;
     }

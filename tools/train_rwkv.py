@@ -22,9 +22,9 @@ HIDDEN_DIM = 128
 FFN_DIM = 512
 NUM_LAYERS = 2
 SEQ_LEN = 256
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-EPOCHS = 40
+EPOCHS = 15
 GRAD_CLIP = 1.0
 
 MAGIC = b'LXRW'
@@ -387,6 +387,14 @@ def main():
     print(f"Parameters: {total_params:,} ({total_params * 4 / 1024:.1f} KB)")
 
     corpus = ''.join(CORPUS_PARTS)
+    # Load external corpus files if available
+    for ext_path in ['/tmp/corpus_sherlock.txt', '/tmp/corpus_pride.txt']:
+        try:
+            with open(ext_path, 'r', encoding='utf-8', errors='ignore') as f:
+                corpus += f.read()
+            print(f"Loaded external corpus: {ext_path}")
+        except FileNotFoundError:
+            pass
     print(f"Corpus size: {len(corpus):,} chars ({len(corpus.encode('utf-8')):,} bytes UTF-8)")
 
     dataset = prepare_data(corpus)

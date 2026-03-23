@@ -365,6 +365,170 @@ class GRUBackend implements Backend {
   update(sym: number) { this.forward(sym); }
 }
 
+// === RWKV Backend (TS replica of C++ engine) ===
+class RWKVBackend implements Backend {
+  name = 'RWKV';
+  private weights: Map<string, { shape: number[], data: Float32Array }> = new Map();
+  private hiddenDim = 0;
+  private ffnDim = 0;
+  private numLayers = 0;
+  private states: { sx: Float32Array, sA: Float32Array, sB: Float32Array, sp: Float32Array, sf: Float32Array }[] = [];
+  private freqTable: number[] = new Array(256).fill(1);
+  private freqTotal = 256;
+  private loaded = false;
+
+  constructor(weightsPath: string) {
+    const buf = readFileSync(weightsPath);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let off = 0;
+    off += 4; // magic
+    off += 4; // version
+    this.hiddenDim = dv.getUint32(off, true); off += 4;
+    this.numLayers = dv.getUint32(off, true); off += 4;
+    this.ffnDim = dv.getUint32(off, true); off += 4;
+    off += 4; // vocab
+    const numTensors = dv.getUint32(off, true); off += 4;
+    for (let t = 0; t < numTensors; t++) {
+      const keyLen = dv.getUint32(off, true); off += 4;
+      const key = new TextDecoder().decode(buf.slice(off, off + keyLen)); off += keyLen;
+      const ndim = dv.getUint32(off, true); off += 4;
+      const shape: number[] = [];
+      let total = 1;
+      for (let d = 0; d < ndim; d++) { const s = dv.getUint32(off, true); off += 4; shape.push(s); total *= s; }
+      const data = new Float32Array(total);
+      for (let i = 0; i < total; i++) { data[i] = dv.getFloat32(off, true); off += 4; }
+      this.weights.set(key, { shape, data });
+    }
+    this.loaded = true;
+    this.reset();
+  }
+
+  private w(name: string): Float32Array { return this.weights.get(name)!.data; }
+
+  private layerNorm(x: Float32Array, prefix: string): void {
+    const wt = this.w(prefix + '.weight'), bi = this.w(prefix + '.bias');
+    const n = x.length;
+    let mean = 0; for (let i = 0; i < n; i++) mean += x[i]; mean /= n;
+    let vr = 0; for (let i = 0; i < n; i++) { const d = x[i] - mean; vr += d * d; } vr /= n;
+    const inv = 1.0 / Math.sqrt(vr + 1e-5);
+    for (let i = 0; i < n; i++) x[i] = (x[i] - mean) * inv * wt[i] + bi[i];
+  }
+
+  private matVec(W: Float32Array, x: Float32Array, rows: number, cols: number): Float32Array {
+    const out = new Float32Array(rows);
+    for (let r = 0; r < rows; r++) { let s = 0; for (let c = 0; c < cols; c++) s += W[r * cols + c] * x[c]; out[r] = s; }
+    return out;
+  }
+
+  private sigmoid(x: number): number { return 1.0 / (1.0 + Math.exp(-Math.max(-15, Math.min(15, x)))); }
+
+  reset() {
+    this.states = [];
+    for (let i = 0; i < this.numLayers; i++) {
+      this.states.push({
+        sx: new Float32Array(this.hiddenDim),
+        sA: new Float32Array(this.hiddenDim),
+        sB: new Float32Array(this.hiddenDim),
+        sp: new Float32Array(this.hiddenDim).fill(-1e30),
+        sf: new Float32Array(this.hiddenDim),
+      });
+    }
+    this.freqTable = new Array(256).fill(1); this.freqTotal = 256;
+  }
+
+  private forward(byte: number): void {
+    if (!this.loaded) return;
+    const H = this.hiddenDim, F = this.ffnDim;
+    const emb = this.w('emb.weight');
+    let x = new Float32Array(H);
+    for (let i = 0; i < H; i++) x[i] = emb[byte * H + i];
+    this.layerNorm(x, 'ln0');
+
+    for (let layer = 0; layer < this.numLayers; layer++) {
+      const p = `blocks.${layer}`;
+      const st = this.states[layer];
+      const xRes = new Float32Array(x);
+
+      // TimeMix
+      this.layerNorm(x, `${p}.ln1`);
+      const mk = this.w(`${p}.time_mix.time_mix_k`), mv = this.w(`${p}.time_mix.time_mix_v`), mr = this.w(`${p}.time_mix.time_mix_r`);
+      const xk = new Float32Array(H), xv = new Float32Array(H), xr = new Float32Array(H);
+      for (let i = 0; i < H; i++) {
+        xk[i] = x[i] * mk[i] + st.sx[i] * (1 - mk[i]);
+        xv[i] = x[i] * mv[i] + st.sx[i] * (1 - mv[i]);
+        xr[i] = x[i] * mr[i] + st.sx[i] * (1 - mr[i]);
+      }
+      const k = this.matVec(this.w(`${p}.time_mix.key.weight`), xk, H, H);
+      const v = this.matVec(this.w(`${p}.time_mix.value.weight`), xv, H, H);
+      const r = this.matVec(this.w(`${p}.time_mix.receptance.weight`), xr, H, H);
+      for (let i = 0; i < H; i++) r[i] = this.sigmoid(r[i]);
+
+      const tf = this.w(`${p}.time_mix.time_first`), td = this.w(`${p}.time_mix.time_decay`);
+      const wkv = new Float32Array(H);
+      for (let i = 0; i < H; i++) {
+        const ww = tf[i] + k[i];
+        const pp = Math.max(st.sp[i], ww);
+        const e1 = Math.exp(st.sp[i] - pp), e2 = Math.exp(ww - pp);
+        const a = e1 * st.sA[i] + e2 * v[i], b = e1 * st.sB[i] + e2;
+        wkv[i] = r[i] * a / (b + 1e-8);
+      }
+      const attOut = this.matVec(this.w(`${p}.time_mix.output.weight`), wkv, H, H);
+      // Update state
+      for (let i = 0; i < H; i++) {
+        const ww2 = st.sp[i] + td[i], pp2 = Math.max(ww2, k[i]);
+        const e1 = Math.exp(ww2 - pp2), e2 = Math.exp(k[i] - pp2);
+        st.sA[i] = e1 * st.sA[i] + e2 * v[i]; st.sB[i] = e1 * st.sB[i] + e2; st.sp[i] = pp2;
+      }
+      st.sx = new Float32Array(x);
+
+      x = new Float32Array(xRes);
+      for (let i = 0; i < H; i++) x[i] += attOut[i];
+
+      // ChannelMix
+      const xRes2 = new Float32Array(x);
+      this.layerNorm(x, `${p}.ln2`);
+      const cmk = this.w(`${p}.channel_mix.time_mix_k`), cmr = this.w(`${p}.channel_mix.time_mix_r`);
+      const ck = new Float32Array(H), cr = new Float32Array(H);
+      for (let i = 0; i < H; i++) {
+        ck[i] = x[i] * cmk[i] + st.sf[i] * (1 - cmk[i]);
+        cr[i] = x[i] * cmr[i] + st.sf[i] * (1 - cmr[i]);
+      }
+      st.sf = new Float32Array(x);
+
+      let fk = this.matVec(this.w(`${p}.channel_mix.key.weight`), ck, F, H);
+      for (let i = 0; i < F; i++) { fk[i] = Math.max(0, fk[i]); fk[i] *= fk[i]; }
+      const fv = this.matVec(this.w(`${p}.channel_mix.value.weight`), fk, H, F);
+      const fr = this.matVec(this.w(`${p}.channel_mix.receptance.weight`), cr, H, H);
+      for (let i = 0; i < H; i++) fv[i] *= this.sigmoid(fr[i]);
+
+      x = new Float32Array(xRes2);
+      for (let i = 0; i < H; i++) x[i] += fv[i];
+    }
+
+    this.layerNorm(x, 'ln_out');
+    const logits = this.matVec(this.w('head.weight'), x, 256, this.hiddenDim);
+
+    // softmax → freq table
+    let maxL = -Infinity;
+    for (let i = 0; i < 256; i++) if (logits[i] > maxL) maxL = logits[i];
+    let sumExp = 0;
+    const probs = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { probs[i] = Math.exp(logits[i] - maxL); sumExp += probs[i]; }
+    this.freqTotal = 0;
+    for (let i = 0; i < 256; i++) {
+      const c = Math.max(1, Math.floor(probs[i] / sumExp * 8192));
+      this.freqTable[i] = c; this.freqTotal += c;
+    }
+  }
+
+  getFrequency(sym: number) {
+    let cumLow = 0; for (let i = 0; i < sym; i++) cumLow += this.freqTable[i];
+    return { cumLow, cumHigh: cumLow + this.freqTable[sym] };
+  }
+  getTotal() { return this.freqTotal; }
+  update(sym: number) { this.forward(sym); }
+}
+
 // === gzip reference ===
 function gzipSize(data: Uint8Array): number {
   const tmp = '/tmp/_lexifold_bench.tmp';
@@ -481,22 +645,20 @@ interface Config {
   preprocess?: (text: string) => string;
 }
 
-const weightsPath = './entry/src/main/resources/rawfile/gru_weights.bin';
+const gruPath = './entry/src/main/resources/rawfile/gru_weights.bin';
+const rwkvPath = './entry/src/main/resources/rawfile/rwkv_weights.bin';
 let gruBackend: Backend | null = null;
-try {
-  gruBackend = new GRUBackend(weightsPath);
-} catch (e) {
-  console.error('GRU weights not found, skipping GRU benchmark');
-}
+let rwkvBackend: Backend | null = null;
+try { gruBackend = new GRUBackend(gruPath); } catch (e) { /* skip */ }
+try { rwkvBackend = new RWKVBackend(rwkvPath); } catch (e) { /* skip */ }
 
 const configs: Config[] = [
   { label: 'v0 Order-0', backend: new Order0Adaptive() },
   { label: 'v1 Order-1', backend: new Order1Adaptive() },
   { label: 'v2 PPM-3', backend: new PPMOrder3Blended() },
 ];
-if (gruBackend) {
-  configs.push({ label: 'v2 GRU', backend: gruBackend });
-}
+if (gruBackend) configs.push({ label: 'v2 GRU', backend: gruBackend });
+if (rwkvBackend) configs.push({ label: 'v2 RWKV', backend: rwkvBackend });
 
 // === Run benchmark ===
 console.log('# LexiFold Compression Benchmark\n');
@@ -535,5 +697,6 @@ console.log('**Legend:**');
 console.log('- **v0 Order-0**: Byte frequency tracking (v0 default)');
 console.log('- **v1 Order-1**: Previous-byte context model (v1 default)');
 console.log('- **v2 PPM-3**: Blended order-0/1/2/3 context model, native C++ engine');
-console.log('- **v2 GRU**: Character-level GRU neural network (embed→GRU→linear), trained on built-in corpus');
+console.log('- **v2 GRU**: Character-level GRU (36K params, 7KB corpus)');
+console.log('- **v2 RWKV**: RWKV v4 (495K params, 74KB corpus)');
 console.log('- **gzip -9**: Reference (LZ77 + Huffman, maximum compression)');
