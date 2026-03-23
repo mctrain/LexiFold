@@ -240,6 +240,131 @@ function compressSize(data: Uint8Array, backend: Backend): number {
   return encoder.finish();
 }
 
+// === GRU Neural Backend (TS replica of C++ engine) ===
+class GRUBackend implements Backend {
+  name = 'GRU Neural';
+  private embed: Float32Array = new Float32Array(0);
+  private W_z: Float32Array = new Float32Array(0);
+  private b_z: Float32Array = new Float32Array(0);
+  private W_r: Float32Array = new Float32Array(0);
+  private b_r: Float32Array = new Float32Array(0);
+  private W_h: Float32Array = new Float32Array(0);
+  private b_h: Float32Array = new Float32Array(0);
+  private out_w: Float32Array = new Float32Array(0);
+  private out_b: Float32Array = new Float32Array(0);
+  private hidden: Float32Array = new Float32Array(0);
+  private freqTable: number[] = new Array(256).fill(1);
+  private freqTotal = 256;
+  private embedDim = 0;
+  private hiddenDim = 0;
+  private loaded = false;
+
+  constructor(weightsPath: string) {
+    this.loadWeights(weightsPath);
+    this.reset();
+  }
+
+  private loadWeights(path: string): void {
+    const buf = readFileSync(path);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    // Header: magic(4) + version(4) + embed_dim(4) + hidden_dim(4) + vocab(4) = 20 bytes
+    const magic = dv.getUint32(0, true);
+    if (magic !== 0x4E4E584C) { console.error('Bad GRU magic'); return; }
+    this.embedDim = dv.getUint32(8, true);
+    this.hiddenDim = dv.getUint32(12, true);
+    const inputSize = this.embedDim + this.hiddenDim;
+    let off = 20;
+    const readF32 = (count: number): Float32Array => {
+      const arr = new Float32Array(count);
+      for (let i = 0; i < count; i++) { arr[i] = dv.getFloat32(off, true); off += 4; }
+      return arr;
+    };
+    this.embed = readF32(256 * this.embedDim);
+    this.W_z = readF32(inputSize * this.hiddenDim);
+    this.b_z = readF32(this.hiddenDim);
+    this.W_r = readF32(inputSize * this.hiddenDim);
+    this.b_r = readF32(this.hiddenDim);
+    this.W_h = readF32(inputSize * this.hiddenDim);
+    this.b_h = readF32(this.hiddenDim);
+    this.out_w = readF32(this.hiddenDim * 256);
+    this.out_b = readF32(256);
+    this.hidden = new Float32Array(this.hiddenDim);
+    this.loaded = true;
+  }
+
+  reset() {
+    if (this.hiddenDim > 0) this.hidden.fill(0);
+    this.freqTable = new Array(256).fill(1);
+    this.freqTotal = 256;
+  }
+
+  private sigmoid(x: number): number { return 1.0 / (1.0 + Math.exp(-Math.max(-15, Math.min(15, x)))); }
+
+  private forward(byte: number): void {
+    if (!this.loaded) return;
+    const ed = this.embedDim, hd = this.hiddenDim, is = ed + hd;
+    // xh = [embed[byte], hidden]
+    const xh = new Float32Array(is);
+    for (let i = 0; i < ed; i++) xh[i] = this.embed[byte * ed + i];
+    for (let i = 0; i < hd; i++) xh[ed + i] = this.hidden[i];
+    // z = sigmoid(xh @ W_z + b_z)
+    const z = new Float32Array(hd);
+    for (let j = 0; j < hd; j++) {
+      let s = this.b_z[j];
+      for (let i = 0; i < is; i++) s += xh[i] * this.W_z[i * hd + j];
+      z[j] = this.sigmoid(s);
+    }
+    // r = sigmoid(xh @ W_r + b_r)
+    const r = new Float32Array(hd);
+    for (let j = 0; j < hd; j++) {
+      let s = this.b_r[j];
+      for (let i = 0; i < is; i++) s += xh[i] * this.W_r[i * hd + j];
+      r[j] = this.sigmoid(s);
+    }
+    // xrh = [embed, r*h]
+    const xrh = new Float32Array(is);
+    for (let i = 0; i < ed; i++) xrh[i] = xh[i];
+    for (let i = 0; i < hd; i++) xrh[ed + i] = r[i] * this.hidden[i];
+    // h_cand = tanh(xrh @ W_h + b_h)
+    const hc = new Float32Array(hd);
+    for (let j = 0; j < hd; j++) {
+      let s = this.b_h[j];
+      for (let i = 0; i < is; i++) s += xrh[i] * this.W_h[i * hd + j];
+      hc[j] = Math.tanh(Math.max(-15, Math.min(15, s)));
+    }
+    // h_new = (1-z)*h + z*h_cand
+    for (let i = 0; i < hd; i++) this.hidden[i] = (1 - z[i]) * this.hidden[i] + z[i] * hc[i];
+    // logits = h @ out_w + out_b
+    const logits = new Float32Array(256);
+    for (let j = 0; j < 256; j++) {
+      let s = this.out_b[j];
+      for (let i = 0; i < hd; i++) s += this.hidden[i] * this.out_w[i * 256 + j];
+      logits[j] = s;
+    }
+    // softmax → freq table
+    let maxL = -Infinity;
+    for (let i = 0; i < 256; i++) if (logits[i] > maxL) maxL = logits[i];
+    let sumExp = 0;
+    const probs = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { probs[i] = Math.exp(logits[i] - maxL); sumExp += probs[i]; }
+    const target = 8192;
+    this.freqTotal = 0;
+    for (let i = 0; i < 256; i++) {
+      const c = Math.max(1, Math.floor(probs[i] / sumExp * target));
+      this.freqTable[i] = c;
+      this.freqTotal += c;
+    }
+  }
+
+  getFrequency(sym: number) {
+    let cumLow = 0;
+    for (let i = 0; i < sym; i++) cumLow += this.freqTable[i];
+    return { cumLow, cumHigh: cumLow + this.freqTable[sym] };
+  }
+  getTotal() { return this.freqTotal; }
+  update(sym: number) { this.forward(sym); }
+}
+
 // === gzip reference ===
 function gzipSize(data: Uint8Array): number {
   const tmp = '/tmp/_lexifold_bench.tmp';
@@ -356,11 +481,22 @@ interface Config {
   preprocess?: (text: string) => string;
 }
 
+const weightsPath = './entry/src/main/resources/rawfile/gru_weights.bin';
+let gruBackend: Backend | null = null;
+try {
+  gruBackend = new GRUBackend(weightsPath);
+} catch (e) {
+  console.error('GRU weights not found, skipping GRU benchmark');
+}
+
 const configs: Config[] = [
   { label: 'v0 Order-0', backend: new Order0Adaptive() },
   { label: 'v1 Order-1', backend: new Order1Adaptive() },
   { label: 'v2 PPM-3', backend: new PPMOrder3Blended() },
 ];
+if (gruBackend) {
+  configs.push({ label: 'v2 GRU', backend: gruBackend });
+}
 
 // === Run benchmark ===
 console.log('# LexiFold Compression Benchmark\n');
@@ -398,5 +534,6 @@ console.log('');
 console.log('**Legend:**');
 console.log('- **v0 Order-0**: Byte frequency tracking (v0 default)');
 console.log('- **v1 Order-1**: Previous-byte context model (v1 default)');
-console.log('- **v2 PPM-3**: Blended order-0/1/2/3 context model, native C++ engine (v2)');
+console.log('- **v2 PPM-3**: Blended order-0/1/2/3 context model, native C++ engine');
+console.log('- **v2 GRU**: Character-level GRU neural network (embed→GRU→linear), trained on built-in corpus');
 console.log('- **gzip -9**: Reference (LZ77 + Huffman, maximum compression)');
