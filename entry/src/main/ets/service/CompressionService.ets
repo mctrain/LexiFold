@@ -2,11 +2,14 @@
 
 import {
   CompressionProfile, CompressionResult, DecompressionResult,
-  CompressWithDataResult, RoundTripResult,
-  getDefaultProfile, getBackendName, getTokenizerName, FILE_EXTENSION
+  CompressWithDataResult, RoundTripResult, Preprocessor,
+  BackendOption, PreprocessorOption,
+  getDefaultProfile, getBackendName, getTokenizerName, getPreprocessorName,
+  getAvailableBackends, getAvailablePreprocessors,
+  FILE_EXTENSION
 } from '../core/Types';
 import { ByteTokenizer } from '../core/Tokenizer';
-import { IdentityPreprocessor } from '../core/TextPreprocessor';
+import { createPreprocessor } from '../core/TextPreprocessor';
 import { compressData, decompressData, CompressOutput, DecompressOutput } from '../core/ChunkProcessor';
 
 function makeCompressionResult(
@@ -49,16 +52,39 @@ function makeDecompressionResult(
 export class CompressionService {
   private profile: CompressionProfile;
   private tokenizer: ByteTokenizer;
-  private preprocessor: IdentityPreprocessor;
+  private preprocessor: Preprocessor;
 
   constructor() {
     this.profile = getDefaultProfile();
     this.tokenizer = new ByteTokenizer();
-    this.preprocessor = new IdentityPreprocessor();
+    this.preprocessor = createPreprocessor(this.profile.preprocessorId);
   }
+
+  // === Profile management ===
 
   getProfile(): CompressionProfile {
     return this.profile;
+  }
+
+  setBackend(backendId: number, modelId: number): void {
+    this.profile = {
+      tokenizerId: this.profile.tokenizerId,
+      preprocessorId: this.profile.preprocessorId,
+      backendId: backendId,
+      modelId: modelId,
+      chunkSize: this.profile.chunkSize
+    };
+  }
+
+  setPreprocessor(preprocessorId: number): void {
+    this.profile = {
+      tokenizerId: this.profile.tokenizerId,
+      preprocessorId: preprocessorId,
+      backendId: this.profile.backendId,
+      modelId: this.profile.modelId,
+      chunkSize: this.profile.chunkSize
+    };
+    this.preprocessor = createPreprocessor(preprocessorId);
   }
 
   getBackendDisplayName(): string {
@@ -69,11 +95,24 @@ export class CompressionService {
     return getTokenizerName(this.profile.tokenizerId);
   }
 
+  getPreprocessorDisplayName(): string {
+    return getPreprocessorName(this.profile.preprocessorId);
+  }
+
   getFileExtension(): string {
     return FILE_EXTENSION;
   }
 
-  // Compress text string → CompressionResult only
+  getBackendOptions(): BackendOption[] {
+    return getAvailableBackends();
+  }
+
+  getPreprocessorOptions(): PreprocessorOption[] {
+    return getAvailablePreprocessors();
+  }
+
+  // === Compress text → CompressionResult only ===
+
   compressText(text: string): CompressionResult {
     const startTime: number = Date.now();
     try {
@@ -95,7 +134,8 @@ export class CompressionService {
     }
   }
 
-  // Compress text and return archive bytes
+  // === Compress text → archive bytes ===
+
   compressTextToBytes(text: string): CompressWithDataResult {
     const startTime: number = Date.now();
     try {
@@ -129,7 +169,8 @@ export class CompressionService {
     }
   }
 
-  // Compress raw bytes → archive bytes
+  // === Compress raw bytes → archive bytes ===
+
   compressBytes(inputBytes: Uint8Array): CompressWithDataResult {
     const startTime: number = Date.now();
     try {
@@ -161,7 +202,8 @@ export class CompressionService {
     }
   }
 
-  // Decompress archive bytes → text
+  // === Decompress archive bytes → text ===
+
   decompressToText(archiveData: Uint8Array): DecompressionResult {
     const startTime: number = Date.now();
     try {
@@ -172,6 +214,7 @@ export class CompressionService {
           this.profile.tokenizerId, output.error);
       }
       const rawText: string = this.tokenizer.detokenize(output.data);
+      // Use the preprocessor recorded in the archive for correct reversal
       const text: string = this.preprocessor.reverse(rawText);
       return makeDecompressionResult(true, output.originalSize, output.compressedSize,
         Date.now() - startTime, text, this.getBackendDisplayName(),
@@ -184,7 +227,8 @@ export class CompressionService {
     }
   }
 
-  // Round-trip verification
+  // === Round-trip verification ===
+
   verifyRoundTrip(text: string): RoundTripResult {
     const compressed: CompressWithDataResult = this.compressTextToBytes(text);
     if (!compressed.result.success) {

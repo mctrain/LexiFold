@@ -2,9 +2,12 @@ import { fileIo } from '@kit.CoreFileKit';
 import { picker } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { CompressionService } from '../service/CompressionService';
-import { CompressionResult, DecompressionResult, CompressWithDataResult } from '../core/Types';
+import {
+  CompressionResult, DecompressionResult, CompressWithDataResult,
+  BackendOption, PreprocessorOption,
+  BACKEND_CPU_REFERENCE, MODEL_ORDER0_ADAPTIVE, PREPROCESSOR_IDENTITY
+} from '../core/Types';
 
-// Color palette
 const PRIMARY = '#0A59F7';
 const PRIMARY_LIGHT = '#EDF4FF';
 const SUCCESS = '#64BB5C';
@@ -24,6 +27,12 @@ struct Index {
   private service: CompressionService = new CompressionService();
 
   @State currentTab: number = 0;
+  @State showSettings: boolean = false;
+
+  // --- Settings state ---
+  @State selectedBackendId: number = BACKEND_CPU_REFERENCE;
+  @State selectedModelId: number = MODEL_ORDER0_ADAPTIVE;
+  @State selectedPreprocessorId: number = PREPROCESSOR_IDENTITY;
 
   // --- Compress state ---
   @State inputText: string = '';
@@ -48,13 +57,17 @@ struct Index {
   @State verifyStatus: string = '';
   @State verifyIsOk: boolean = false;
 
-  // --- Info ---
+  // --- Display info ---
   @State backendInfo: string = '';
-  @State tokenizerInfo: string = '';
+  @State preprocessorInfo: string = '';
 
   aboutToAppear(): void {
+    this.refreshInfo();
+  }
+
+  private refreshInfo(): void {
     this.backendInfo = this.service.getBackendDisplayName();
-    this.tokenizerInfo = this.service.getTokenizerDisplayName();
+    this.preprocessorInfo = this.service.getPreprocessorDisplayName();
   }
 
   private formatBytes(bytes: number): string {
@@ -104,12 +117,11 @@ struct Index {
       if (uris.length === 0) {
         return;
       }
-      const uri: string = uris[0];
       this.isCompressing = true;
       this.compressStatus = '';
       this.compressIsError = false;
 
-      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+      const file = fileIo.openSync(uris[0], fileIo.OpenMode.READ_ONLY);
       const stat = fileIo.statSync(file.fd);
       const buf = new ArrayBuffer(stat.size);
       fileIo.readSync(file.fd, buf);
@@ -148,7 +160,7 @@ struct Index {
       const file = fileIo.openSync(filePath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
       fileIo.writeSync(file.fd, this.lastArchiveData.buffer);
       fileIo.closeSync(file.fd);
-      this.compressStatus = `Saved to sandbox`;
+      this.compressStatus = 'Saved to sandbox';
       this.compressIsError = false;
     } catch (e) {
       this.compressStatus = `Save failed: ${(e as Error).message || String(e)}`;
@@ -257,17 +269,120 @@ struct Index {
   }
 
   @Builder
-  SectionCard() {
-    Column()
+  SettingsPanel() {
+    Column() {
+      // Header
+      Row() {
+        Text('Settings')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(TEXT_PRIMARY)
+        Blank()
+        Button('Done')
+          .type(ButtonType.Capsule)
+          .backgroundColor(PRIMARY)
+          .fontSize(13)
+          .height(32)
+          .onClick(() => {
+            this.showSettings = false;
+          })
+      }
       .width('100%')
-      .backgroundColor(CARD_BG)
-      .borderRadius(16)
-      .shadow({ radius: 8, color: '#0D000000', offsetX: 0, offsetY: 2 })
+      .margin({ bottom: 16 })
+
+      // Backend selection
+      Text('Prediction Backend')
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(TEXT_SECONDARY)
+        .margin({ bottom: 8 })
+
+      ForEach(this.service.getBackendOptions(), (opt: BackendOption) => {
+        Row() {
+          Radio({ value: opt.id.toString(), group: 'backend' })
+            .checked(this.selectedBackendId === opt.id)
+            .onChange((isChecked: boolean) => {
+              if (isChecked) {
+                this.selectedBackendId = opt.id;
+                this.selectedModelId = opt.modelId;
+                this.service.setBackend(opt.id, opt.modelId);
+                this.refreshInfo();
+              }
+            })
+            .margin({ right: 8 })
+          Column() {
+            Text(opt.name)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(TEXT_PRIMARY)
+            Text(opt.description)
+              .fontSize(12)
+              .fontColor(TEXT_HINT)
+              .margin({ top: 2 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ top: 8, bottom: 8 })
+        .alignItems(VerticalAlign.Center)
+      })
+
+      Divider().margin({ top: 12, bottom: 12 }).color(DIVIDER)
+
+      // Preprocessor selection
+      Text('Text Preprocessor')
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(TEXT_SECONDARY)
+        .margin({ bottom: 8 })
+
+      ForEach(this.service.getPreprocessorOptions(), (opt: PreprocessorOption) => {
+        Row() {
+          Radio({ value: opt.id.toString(), group: 'preprocessor' })
+            .checked(this.selectedPreprocessorId === opt.id)
+            .onChange((isChecked: boolean) => {
+              if (isChecked) {
+                this.selectedPreprocessorId = opt.id;
+                this.service.setPreprocessor(opt.id);
+                this.refreshInfo();
+              }
+            })
+            .margin({ right: 8 })
+          Column() {
+            Text(opt.name)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(TEXT_PRIMARY)
+            Text(opt.description)
+              .fontSize(12)
+              .fontColor(TEXT_HINT)
+              .margin({ top: 2 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ top: 8, bottom: 8 })
+        .alignItems(VerticalAlign.Center)
+      })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(CARD_BG)
+    .borderRadius(16)
+    .shadow({ radius: 8, color: '#0D000000', offsetX: 0, offsetY: 2 })
   }
 
   @Builder
   CompressPage() {
     Column() {
+      // Settings panel (expandable)
+      if (this.showSettings) {
+        this.SettingsPanel()
+        Column().height(16)
+      }
+
       // Text input card
       Column() {
         Text('Input Text')
@@ -275,7 +390,6 @@ struct Index {
           .fontWeight(FontWeight.Medium)
           .fontColor(TEXT_SECONDARY)
           .margin({ bottom: 8 })
-
         TextArea({ placeholder: 'Paste or type text to compress...', text: this.inputText })
           .height(140)
           .width('100%')
@@ -305,7 +419,6 @@ struct Index {
             this.compressInputText();
           })
           .enabled(!this.isCompressing)
-
         Button('From File')
           .type(ButtonType.Capsule)
           .backgroundColor('#FFFFFF')
@@ -340,20 +453,11 @@ struct Index {
         Column() {
           Row() {
             this.MetricItem('Original', this.formatBytes(this.compressOriginalSize))
-            Column()
-              .width(1)
-              .height(32)
-              .backgroundColor(DIVIDER)
+            Column().width(1).height(32).backgroundColor(DIVIDER)
             this.MetricItem('Compressed', this.formatBytes(this.compressedSize))
-            Column()
-              .width(1)
-              .height(32)
-              .backgroundColor(DIVIDER)
+            Column().width(1).height(32).backgroundColor(DIVIDER)
             this.MetricItem('Ratio', `${(this.compressRatio * 100).toFixed(1)}%`)
-            Column()
-              .width(1)
-              .height(32)
-              .backgroundColor(DIVIDER)
+            Column().width(1).height(32).backgroundColor(DIVIDER)
             this.MetricItem('Time', `${this.compressTime}ms`)
           }
           .width('100%')
@@ -380,7 +484,6 @@ struct Index {
             .onClick(() => {
               this.saveArchive();
             })
-
           Button('Verify Round-trip')
             .type(ButtonType.Capsule)
             .backgroundColor(PRIMARY_LIGHT)
@@ -405,13 +508,11 @@ struct Index {
   @Builder
   DecompressPage() {
     Column() {
-      // Open file card
       Column() {
         Text('Select an .lxf archive to decompress')
           .fontSize(14)
           .fontColor(TEXT_SECONDARY)
           .margin({ bottom: 16 })
-
         Button('Open Archive File')
           .type(ButtonType.Capsule)
           .backgroundColor(PRIMARY)
@@ -423,7 +524,6 @@ struct Index {
             this.selectAndDecompress();
           })
           .enabled(!this.isDecompressing)
-
         if (this.hasArchiveData) {
           Button('Decompress Last Compressed')
             .type(ButtonType.Capsule)
@@ -445,11 +545,9 @@ struct Index {
       .borderRadius(16)
       .shadow({ radius: 8, color: '#0D000000', offsetX: 0, offsetY: 2 })
 
-      // Status
       if (this.decompressStatus.length > 0) {
         Row() {
           this.StatusBadge(this.decompressStatus, this.decompressIsError)
-
           if (this.verifyStatus.length > 0) {
             Text(this.verifyStatus)
               .fontSize(12)
@@ -466,20 +564,13 @@ struct Index {
         .margin({ top: 12 })
       }
 
-      // Metrics
       if (this.decompressOriginalSize > 0 && !this.decompressIsError) {
         Column() {
           Row() {
             this.MetricItem('Original', this.formatBytes(this.decompressOriginalSize))
-            Column()
-              .width(1)
-              .height(32)
-              .backgroundColor(DIVIDER)
+            Column().width(1).height(32).backgroundColor(DIVIDER)
             this.MetricItem('Archive', this.formatBytes(this.decompressCompressedSize))
-            Column()
-              .width(1)
-              .height(32)
-              .backgroundColor(DIVIDER)
+            Column().width(1).height(32).backgroundColor(DIVIDER)
             this.MetricItem('Time', `${this.decompressTime}ms`)
           }
           .width('100%')
@@ -493,7 +584,6 @@ struct Index {
         .margin({ top: 16 })
       }
 
-      // Output text
       if (this.decompressedText.length > 0) {
         Column() {
           Text('Decompressed Output')
@@ -501,7 +591,6 @@ struct Index {
             .fontWeight(FontWeight.Medium)
             .fontColor(TEXT_SECONDARY)
             .margin({ bottom: 8 })
-
           Scroll() {
             Text(this.decompressedText)
               .fontSize(13)
@@ -546,20 +635,31 @@ struct Index {
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
-          Column() {
-            Text('CPU')
-              .fontSize(11)
-              .fontColor(PRIMARY)
-              .fontWeight(FontWeight.Bold)
-            Text('Byte-256')
+          // Tappable profile badge
+          Row() {
+            Column() {
+              Text(this.backendInfo)
+                .fontSize(11)
+                .fontColor(PRIMARY)
+                .fontWeight(FontWeight.Bold)
+              Text(this.preprocessorInfo === 'None' ? 'Byte-256' : `Byte-256 + ${this.preprocessorInfo}`)
+                .fontSize(10)
+                .fontColor(TEXT_HINT)
+                .margin({ top: 1 })
+            }
+            .alignItems(HorizontalAlign.End)
+
+            Text(this.showSettings ? ' ^' : ' v')
               .fontSize(10)
               .fontColor(TEXT_HINT)
-              .margin({ top: 1 })
+              .margin({ left: 4 })
           }
-          .alignItems(HorizontalAlign.End)
-          .padding({ left: 12, right: 4, top: 4, bottom: 4 })
-          .backgroundColor(PRIMARY_LIGHT)
+          .padding({ left: 12, right: 8, top: 6, bottom: 6 })
+          .backgroundColor(this.showSettings ? PRIMARY_LIGHT : '#F7F8FA')
           .borderRadius(8)
+          .onClick(() => {
+            this.showSettings = !this.showSettings;
+          })
         }
         .width('100%')
         .padding({ left: 20, right: 20, top: 12, bottom: 12 })

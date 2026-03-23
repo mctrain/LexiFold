@@ -1,8 +1,8 @@
-// Benchmark: compare compression across backends and reference compressors
+// Benchmark: compare compression across backends, preprocessors, and reference compressors
 // Run: npx tsx tools/benchmark.ts
 
 import { execSync } from 'child_process';
-import { writeFileSync, unlinkSync, statSync } from 'fs';
+import { writeFileSync, unlinkSync, statSync, readFileSync } from 'fs';
 
 // === Constants (mirror from core) ===
 const CODE_BITS = 24;
@@ -12,6 +12,7 @@ const FIRST_QTR = 1 << (CODE_BITS - 2);
 const THIRD_QTR = HALF + FIRST_QTR;
 const BYTE_VOCAB_SIZE = 256;
 const MAX_TOTAL_FREQ = 16384;
+const ESCAPE_CHAR = '\u0001';
 
 // === Arithmetic Encoder ===
 class ArithmeticEncoder {
@@ -52,7 +53,7 @@ interface Backend {
 }
 
 class Order0Adaptive implements Backend {
-  name = 'Order-0 Adaptive';
+  name = 'Order-0';
   private counts = new Array(256).fill(1);
   private total = 256;
   reset() { this.counts = new Array(256).fill(1); this.total = 256; }
@@ -72,7 +73,7 @@ class Order0Adaptive implements Backend {
 }
 
 class Order1Adaptive implements Backend {
-  name = 'Order-1 Adaptive';
+  name = 'Order-1';
   private contexts: number[][] = [];
   private totals: number[] = [];
   private prev = 0;
@@ -106,12 +107,16 @@ class Order1Adaptive implements Backend {
   }
 }
 
-class UniformBackend implements Backend {
-  name = 'Uniform (no model)';
-  reset() {}
-  getFrequency(sym: number) { return { cumLow: sym, cumHigh: sym + 1 }; }
-  getTotal() { return 256; }
-  update(_sym: number) {}
+// === Preprocessors ===
+function lowercasePreprocess(text: string): string {
+  let result = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === ESCAPE_CHAR) { result += ESCAPE_CHAR + ESCAPE_CHAR; }
+    else if (ch >= 'A' && ch <= 'Z') { result += ESCAPE_CHAR + ch.toLowerCase(); }
+    else { result += ch; }
+  }
+  return result;
 }
 
 // === Compress with backend ===
@@ -139,24 +144,33 @@ function gzipSize(data: Uint8Array): number {
   return size;
 }
 
-// === Test data ===
+// === Test data generators ===
 const enc = new TextEncoder();
 
+// 1. English prose (repetitive)
 let english = '';
 for (let i = 0; i < 100; i++) english += `Line ${i}: The quick brown fox jumps over the lazy dog.\n`;
 const englishData = enc.encode(english);
 
+// 2. Short English sentence
 const shortText = enc.encode('The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump!');
 
+// 3. JSON lines (deterministic)
 let jsonStr = '';
-for (let i = 0; i < 50; i++) jsonStr += `{"id":${i},"name":"item_${i}","value":${Math.floor(Math.random()*1000)},"active":${i%2===0}}\n`;
+let jseed = 1234;
+for (let i = 0; i < 50; i++) {
+  jseed = (jseed * 1103515245 + 12345) & 0x7FFFFFFF;
+  jsonStr += `{"id":${i},"name":"item_${i}","value":${(jseed >> 16) % 1000},"active":${i % 2 === 0}}\n`;
+}
 const jsonData = enc.encode(jsonStr);
 
+// 4. Chinese text
 const chineseText = '今天天气真好，适合出去散步。春风拂面，花香四溢，令人心旷神怡。这是一段用于测试中文文本压缩效果的示例内容，包含常见的中文字符和标点符号。';
 let chineseLong = '';
 for (let i = 0; i < 20; i++) chineseLong += chineseText;
 const chineseData = enc.encode(chineseLong);
 
+// 5. Source code (TypeScript)
 let sourceCode = '';
 for (let i = 0; i < 30; i++) {
   sourceCode += `function calc_${i}(a: number, b: number): number {\n`;
@@ -166,52 +180,118 @@ for (let i = 0; i < 30; i++) {
 }
 const sourceData = enc.encode(sourceCode);
 
+// 6. Random bytes
 const random = new Uint8Array(4096);
 let seed = 42;
 for (let i = 0; i < 4096; i++) { seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF; random[i] = (seed >> 16) & 0xFF; }
 
-interface TestCase {
-  name: string;
-  data: Uint8Array;
+// 7. HTML markup
+let html = '<!DOCTYPE html><html><head><title>Test Page</title></head><body>\n';
+for (let i = 0; i < 30; i++) {
+  html += `  <div class="item" id="item-${i}"><span class="label">Item ${i}</span><span class="value">${i * 17}</span></div>\n`;
 }
+html += '</body></html>\n';
+const htmlData = enc.encode(html);
+
+// 8. CSV data
+let csv = 'id,name,email,score,grade,active\n';
+const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Hank'];
+const domains = ['example.com', 'test.org', 'demo.net'];
+let cseed = 99;
+for (let i = 0; i < 100; i++) {
+  cseed = (cseed * 1103515245 + 12345) & 0x7FFFFFFF;
+  const name = names[i % names.length];
+  const domain = domains[i % domains.length];
+  const score = (cseed >> 16) % 100;
+  const grade = ['A', 'B', 'C', 'D', 'F'][Math.floor(score / 20)];
+  csv += `${i},${name}_${i},${name.toLowerCase()}${i}@${domain},${score},${grade},${i % 3 !== 0}\n`;
+}
+const csvData = enc.encode(csv);
+
+// 9. Log file
+let logStr = '';
+for (let i = 0; i < 80; i++) {
+  const levels = ['INFO', 'DEBUG', 'WARN', 'ERROR', 'INFO', 'INFO', 'DEBUG', 'INFO'];
+  const modules = ['auth', 'db', 'api', 'cache', 'scheduler'];
+  logStr += `2026-03-21 08:${String(i % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.${String(i * 13 % 1000).padStart(3, '0')} [${levels[i % levels.length]}] ${modules[i % modules.length]}: `;
+  if (i % 7 === 0) logStr += `Connection timeout after 30000ms, retrying (attempt ${i % 5 + 1}/5)\n`;
+  else if (i % 5 === 0) logStr += `Cache miss for key user:${i}, fetching from database\n`;
+  else logStr += `Request processed successfully in ${(i * 7 + 3) % 500}ms\n`;
+}
+const logData = enc.encode(logStr);
+
+// 10. Mixed multilingual
+let mixed = '';
+for (let i = 0; i < 20; i++) {
+  mixed += `Entry ${i}: Hello World! 你好世界！こんにちは世界！Привет мир! مرحبا بالعالم\n`;
+  mixed += `  Score: ${i * 17 % 100}, Status: ${i % 2 === 0 ? 'active' : 'inactive'}\n`;
+}
+const mixedData = enc.encode(mixed);
+
+interface TestCase { name: string; data: Uint8Array; }
 
 const testCases: TestCase[] = [
-  { name: 'English text (5.4KB)', data: englishData },
-  { name: 'Short English (123B)', data: shortText },
-  { name: 'JSON lines (3.2KB)', data: jsonData },
+  { name: 'English prose (5.4KB)', data: englishData },
+  { name: 'Short English (122B)', data: shortText },
+  { name: 'JSON lines (3.0KB)', data: jsonData },
   { name: 'Chinese text (8.7KB)', data: chineseData },
-  { name: 'Source code (3.8KB)', data: sourceData },
+  { name: 'TypeScript code (3.8KB)', data: sourceData },
+  { name: 'HTML markup (2.2KB)', data: htmlData },
+  { name: 'CSV data (5.6KB)', data: csvData },
+  { name: 'Log file (5.5KB)', data: logData },
+  { name: 'Multilingual (2.8KB)', data: mixedData },
   { name: 'Random bytes (4KB)', data: random },
 ];
 
-const backends: Backend[] = [
-  new UniformBackend(),
-  new Order0Adaptive(),
-  new Order1Adaptive(),
+interface Config {
+  label: string;
+  backend: Backend;
+  preprocess?: (text: string) => string;
+}
+
+const configs: Config[] = [
+  { label: 'v0 Order-0', backend: new Order0Adaptive() },
+  { label: 'v1 Order-1', backend: new Order1Adaptive() },
+  { label: 'v1 Order-0+LC', backend: new Order0Adaptive(), preprocess: lowercasePreprocess },
+  { label: 'v1 Order-1+LC', backend: new Order1Adaptive(), preprocess: lowercasePreprocess },
 ];
 
 // === Run benchmark ===
 console.log('# LexiFold Compression Benchmark\n');
+console.log(`Date: ${new Date().toISOString().slice(0, 10)}\n`);
 
 // Header
-const hdr = ['Test Data', 'Size', ...backends.map(b => b.name), 'gzip -9'];
+const hdr = ['Test Data', 'Size', ...configs.map(c => c.label), 'gzip -9'];
 console.log('| ' + hdr.join(' | ') + ' |');
-console.log('| ' + hdr.map(() => '---').join(' | ') + ' |');
+console.log('|' + hdr.map(() => ' --- ').join('|') + '|');
 
 for (const tc of testCases) {
   const cols: string[] = [tc.name, `${tc.data.length}`];
-  for (const b of backends) {
-    const sz = compressSize(tc.data, b);
+
+  for (const cfg of configs) {
+    let data = tc.data;
+    if (cfg.preprocess) {
+      // Preprocess: decode to string, preprocess, re-encode
+      const text = new TextDecoder().decode(tc.data);
+      const processed = cfg.preprocess(text);
+      data = enc.encode(processed);
+    }
+    const sz = compressSize(data, cfg.backend);
     const ratio = (sz / tc.data.length * 100).toFixed(1);
-    cols.push(`${sz} (${ratio}%)`);
+    cols.push(`${ratio}%`);
   }
+
   const gz = gzipSize(tc.data);
   const gzRatio = (gz / tc.data.length * 100).toFixed(1);
-  cols.push(`${gz} (${gzRatio}%)`);
+  cols.push(`${gzRatio}%`);
+
   console.log('| ' + cols.join(' | ') + ' |');
 }
 
-console.log('\n> Uniform = no prediction (8 bits/symbol baseline)');
-console.log('> Order-0 = current v0 backend (byte frequency tracking)');
-console.log('> Order-1 = v1 candidate (previous-byte context, 256 contexts)');
-console.log('> gzip -9 = reference (LZ77 + Huffman, maximum compression)');
+console.log('');
+console.log('**Legend:**');
+console.log('- **v0 Order-0**: Byte frequency tracking (v0 default)');
+console.log('- **v1 Order-1**: Previous-byte context model (v1 default)');
+console.log('- **v1 Order-0+LC**: Order-0 + Lowercase preprocessor');
+console.log('- **v1 Order-1+LC**: Order-1 + Lowercase preprocessor (best v1 config)');
+console.log('- **gzip -9**: Reference (LZ77 + Huffman, maximum compression)');

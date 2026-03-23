@@ -5,8 +5,8 @@
 import {
   PredictorBackend, FrequencyInfo, SymbolInfo,
   BYTE_VOCAB_SIZE, MAX_TOTAL_FREQ,
-  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP,
-  MODEL_ORDER0_ADAPTIVE, MODEL_NONE
+  BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1,
+  MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_NONE
 } from './Types';
 
 // === CPU Reference Backend: Order-0 Adaptive Frequency Model ===
@@ -125,11 +125,102 @@ export class MockStepModelBackend implements PredictorBackend {
   }
 }
 
+// === Order-1 Adaptive Backend ===
+// 256 contexts (one per previous byte), each with independent frequency counts.
+// Significantly better than Order-0 for natural language (~43% vs ~62% on English).
+
+export class Order1AdaptiveBackend implements PredictorBackend {
+  readonly id: number = BACKEND_CPU_ORDER1;
+  readonly modelId: number = MODEL_ORDER1_ADAPTIVE;
+  readonly name: string = 'CPU Order-1 Adaptive';
+  readonly vocabSize: number = BYTE_VOCAB_SIZE;
+
+  // Flat array: contexts[prev * 256 + symbol] = count
+  private contexts: number[] = [];
+  private totals: number[] = [];
+  private prev: number = 0;
+
+  constructor() {
+    this.reset();
+  }
+
+  reset(): void {
+    // 256 contexts × 256 symbols = 65536 entries, all initialized to 1
+    const size: number = BYTE_VOCAB_SIZE * BYTE_VOCAB_SIZE;
+    this.contexts = new Array<number>(size);
+    for (let i = 0; i < size; i++) {
+      this.contexts[i] = 1;
+    }
+    this.totals = new Array<number>(BYTE_VOCAB_SIZE);
+    for (let i = 0; i < BYTE_VOCAB_SIZE; i++) {
+      this.totals[i] = BYTE_VOCAB_SIZE;
+    }
+    this.prev = 0;
+  }
+
+  getFrequency(symbol: number): FrequencyInfo {
+    const base: number = this.prev * BYTE_VOCAB_SIZE;
+    let cumLow: number = 0;
+    for (let i = 0; i < symbol; i++) {
+      cumLow += this.contexts[base + i];
+    }
+    const fi: FrequencyInfo = {
+      cumLow: cumLow,
+      cumHigh: cumLow + this.contexts[base + symbol]
+    };
+    return fi;
+  }
+
+  getTotal(): number {
+    return this.totals[this.prev];
+  }
+
+  findSymbol(scaledValue: number): SymbolInfo {
+    const base: number = this.prev * BYTE_VOCAB_SIZE;
+    let cumFreq: number = 0;
+    for (let i = 0; i < BYTE_VOCAB_SIZE; i++) {
+      const nextCum: number = cumFreq + this.contexts[base + i];
+      if (nextCum > scaledValue) {
+        const si: SymbolInfo = { symbol: i, cumLow: cumFreq, cumHigh: nextCum };
+        return si;
+      }
+      cumFreq = nextCum;
+    }
+    const si: SymbolInfo = {
+      symbol: BYTE_VOCAB_SIZE - 1,
+      cumLow: this.totals[this.prev] - this.contexts[base + BYTE_VOCAB_SIZE - 1],
+      cumHigh: this.totals[this.prev]
+    };
+    return si;
+  }
+
+  update(symbol: number): void {
+    const base: number = this.prev * BYTE_VOCAB_SIZE;
+    this.contexts[base + symbol]++;
+    this.totals[this.prev]++;
+    if (this.totals[this.prev] >= MAX_TOTAL_FREQ) {
+      this.rescaleContext(this.prev);
+    }
+    this.prev = symbol;
+  }
+
+  private rescaleContext(ctx: number): void {
+    const base: number = ctx * BYTE_VOCAB_SIZE;
+    this.totals[ctx] = 0;
+    for (let i = 0; i < BYTE_VOCAB_SIZE; i++) {
+      this.contexts[base + i] = Math.max(1, Math.floor(this.contexts[base + i] / 2));
+      this.totals[ctx] += this.contexts[base + i];
+    }
+  }
+}
+
 // === Backend Factory ===
 
 export function createBackend(backendId: number): PredictorBackend {
   if (backendId === BACKEND_CPU_REFERENCE) {
     return new CpuReferenceBackend();
+  } else if (backendId === BACKEND_CPU_ORDER1) {
+    return new Order1AdaptiveBackend();
   } else if (backendId === BACKEND_MOCK_STEP) {
     return new MockStepModelBackend();
   }

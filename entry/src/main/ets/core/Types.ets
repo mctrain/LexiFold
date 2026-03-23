@@ -24,19 +24,46 @@ export const TOKENIZER_BYTE_256: number = 0x01;
 
 // === Preprocessor IDs ===
 export const PREPROCESSOR_IDENTITY: number = 0x00;
+export const PREPROCESSOR_LOWERCASE: number = 0x01;
 
 // === Backend IDs ===
 export const BACKEND_CPU_REFERENCE: number = 0x0001;
 export const BACKEND_MOCK_STEP: number = 0x0002;
+export const BACKEND_CPU_ORDER1: number = 0x0003;
 export const BACKEND_NPU: number = 0x0010;
 export const BACKEND_EXPERIMENTAL_ADAPTIVE: number = 0x00FF;
 
 // === Model IDs ===
 export const MODEL_NONE: number = 0x0000;
 export const MODEL_ORDER0_ADAPTIVE: number = 0x0001;
+export const MODEL_ORDER1_ADAPTIVE: number = 0x0002;
 
 // === Flags ===
 export const FLAG_NONE: number = 0x00;
+
+// === Preprocessor Interface ===
+
+export interface Preprocessor {
+  id: number;
+  name: string;
+  preprocess(text: string): string;
+  reverse(text: string): string;
+}
+
+// === Profile Options (for UI selection) ===
+
+export interface BackendOption {
+  id: number;
+  modelId: number;
+  name: string;
+  description: string;
+}
+
+export interface PreprocessorOption {
+  id: number;
+  name: string;
+  description: string;
+}
 
 // === Interfaces ===
 
@@ -143,7 +170,9 @@ export function getDefaultProfile(): CompressionProfile {
 
 export function getBackendName(backendId: number): string {
   if (backendId === BACKEND_CPU_REFERENCE) {
-    return 'CPU Reference (Order-0 Adaptive)';
+    return 'Order-0 (CPU)';
+  } else if (backendId === BACKEND_CPU_ORDER1) {
+    return 'Order-1 (CPU)';
   } else if (backendId === BACKEND_MOCK_STEP) {
     return 'Mock Step Model';
   } else if (backendId === BACKEND_NPU) {
@@ -152,6 +181,31 @@ export function getBackendName(backendId: number): string {
     return 'Experimental Adaptive (Not Available)';
   }
   return 'Unknown';
+}
+
+export function getPreprocessorName(preprocessorId: number): string {
+  if (preprocessorId === PREPROCESSOR_IDENTITY) {
+    return 'None';
+  } else if (preprocessorId === PREPROCESSOR_LOWERCASE) {
+    return 'Lowercase';
+  }
+  return 'Unknown';
+}
+
+export function getAvailableBackends(): BackendOption[] {
+  const list: BackendOption[] = [
+    { id: BACKEND_CPU_REFERENCE, modelId: MODEL_ORDER0_ADAPTIVE, name: 'Order-0 (CPU)', description: 'Byte frequency tracking, ~62% on English' } as BackendOption,
+    { id: BACKEND_CPU_ORDER1, modelId: MODEL_ORDER1_ADAPTIVE, name: 'Order-1 (CPU)', description: 'Previous-byte context, ~43% on English' } as BackendOption,
+  ];
+  return list;
+}
+
+export function getAvailablePreprocessors(): PreprocessorOption[] {
+  const list: PreprocessorOption[] = [
+    { id: PREPROCESSOR_IDENTITY, name: 'None', description: 'No preprocessing' } as PreprocessorOption,
+    { id: PREPROCESSOR_LOWERCASE, name: 'Lowercase', description: 'Reversible case normalization' } as PreprocessorOption,
+  ];
+  return list;
 }
 
 export function getTokenizerName(tokenizerId: number): string {
