@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "LexiFold - Neural-Inspired Text Compression"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Text compression powered by predictive modeling and arithmetic coding"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "LexiFold"
+    }
+  ]
+}
