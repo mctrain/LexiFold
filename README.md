@@ -160,13 +160,53 @@ CRC32 校验 → ByteTokenizer.detokenize → 原始文本
 
 **局限性**：没有上下文感知。看到 `t-h-` 后不知道下一个大概率是 `e`，只知道全局 `e` 出现频率最高。只能利用字符频率不均匀这一个特征。
 
-**接口可替换**：未来接入 RWKV/Transformer 时，只需实现同一个 `PredictorBackend` 接口：
+### 预测后端 (v2: PPM Order-3 Blended, C++ Native)
+
+PPM (Prediction by Partial Matching) 是经典的统计上下文模型。LexiFold v2 实现了 Order-3 变体，通过 N-API 桥接 C++ 引擎。
+
+**核心思想**：同时维护 4 层上下文，融合预测：
 
 ```
-当前:  counts[byte] / total        → 概率分布 → 算术编码器
-未来:  model.step(token, state)     → logits → softmax → 概率分布 → 算术编码器
-       ▲                             ▲
-       RWKV / 小 Transformer         NPU 推理
+输入序列: ...t-h-e-_-f-o-?    要预测 ? 位置的字节
+
+Order-3: 看前 3 字节 "_fo" → "在 _fo 之后通常出现什么？" → 几乎确定是 x
+Order-2: 看前 2 字节 "fo"  → "在 fo 之后通常出现什么？"  → 较强预测
+Order-1: 看前 1 字节 "o"   → "在 o 之后通常出现什么？"   → 一般预测
+Order-0: 无上下文           → "英文中哪个字节最常见？"     → 最弱预测
+
+融合: blended[byte] = (w3*p3 + w2*p2 + w1*p1 + w0*p0) / (w3+w2+w1+w0)
+```
+
+**动态权重**：高阶上下文见过足够多数据时权重更大，新出现的上下文退化为低阶预测：
+
+```
+w0 = 1 (恒定基线)
+w1 = min(order1_seen / 4, 16)     新上下文 → 低权重，成熟上下文 → 16x
+w2 = min(order2_seen / 2, 32)     最多 32x
+w3 = min(order3_seen, 64)         最多 64x
+```
+
+**存储**：Order-0/1 用固定数组（130KB），Order-2/3 用哈希表惰性分配（只在上下文首次出现时创建）。
+
+**各版本预测能力对比**：
+
+| 序列 `...t-h-e-_-f-o-?` | v0 Order-0 | v1 Order-1 | v2 PPM-3 |
+|--------------------------|-----------|-----------|----------|
+| 能看到的上下文 | 无 | `o` | `_fo` + `fo` + `o` + 全局 |
+| 知道 `th` 常见？ | 不知道 | 知道 | 知道 |
+| 知道 `the` 常见？ | 不知道 | 不知道 | **知道** |
+| 知道 `fox` 中 `fo→x`？ | 不知道 | 不知道 | **知道** |
+| 预测精度 | ~5.0 bits/byte | ~3.4 bits/byte | ~0.9 bits/byte |
+
+**为什么 PPM-3 不够、还需要神经网络？**
+
+PPM 的上下文窗口固定（最多 3 字节）。而自然语言的依赖关系可跨越段落甚至全文（主题、人名、变量名复现）。神经网络通过隐藏状态可记住任意长上下文，v2 建立的 N-API 管线已为此做好准备——只需替换 `PredictorBackend` 实现。
+
+```
+v0:  counts[byte] / total              → 概率分布 → 算术编码器
+v1:  counts[prev][byte] / total[prev]  → 概率分布 → 算术编码器
+v2:  blend(o0, o1, o2, o3)             → 概率分布 → 算术编码器  ← C++ N-API
+未来: model.step(token, state) → logits → 概率分布 → 算术编码器  ← NPU 推理
 ```
 
 ### 分块处理
