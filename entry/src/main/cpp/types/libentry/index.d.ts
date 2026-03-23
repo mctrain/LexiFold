@@ -13,3 +13,12 @@ export const nnGetTotal: () => number;
 export const nnFindSymbol: (scaledValue: number) => number[];
 export const nnUpdate: (symbol: number) => void;
 export const nnIsLoaded: () => boolean;
+
+// RWKV backend
+export const rwLoadModel: (weightsBuffer: ArrayBuffer) => boolean;
+export const rwReset: () => void;
+export const rwGetFrequency: (symbol: number) => number[];
+export const rwGetTotal: () => number;
+export const rwFindSymbol: (scaledValue: number) => number[];
+export const rwUpdate: (symbol: number) => void;
+export const rwIsLoaded: () => boolean;

@@ -8,6 +8,7 @@ add_library(lexifold_native SHARED
     napi_init.cpp
     ppm_engine.cpp
     neural_engine.cpp
+    rwkv_engine.cpp
 )
 
 target_link_libraries(lexifold_native PUBLIC

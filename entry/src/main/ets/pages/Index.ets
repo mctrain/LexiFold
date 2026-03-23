@@ -5,7 +5,7 @@ import { CompressionService } from '../service/CompressionService';
 import {
   CompressionResult, DecompressionResult, CompressWithDataResult,
   BackendOption, PreprocessorOption,
-  BACKEND_CPU_REFERENCE, BACKEND_NEURAL_GRU,
+  BACKEND_CPU_REFERENCE, BACKEND_NEURAL_GRU, BACKEND_RWKV,
   MODEL_ORDER0_ADAPTIVE, PREPROCESSOR_IDENTITY
 } from '../core/Types';
 
@@ -66,12 +66,11 @@ struct Index {
     this.refreshInfo();
   }
 
-  private loadNeuralWeights(): void {
+  private loadModelWeights(filename: string): void {
     try {
       const context = getContext(this) as common.UIAbilityContext;
       const resourceMgr = context.resourceManager;
-      const weightsRaw: Uint8Array = resourceMgr.getRawFileContentSync('gru_weights.bin');
-      // Copy to a standalone ArrayBuffer to avoid structural typing issues
+      const weightsRaw: Uint8Array = resourceMgr.getRawFileContentSync(filename);
       const buf: ArrayBuffer = new ArrayBuffer(weightsRaw.length);
       const view = new Uint8Array(buf);
       for (let i = 0; i < weightsRaw.length; i++) {
@@ -79,7 +78,7 @@ struct Index {
       }
       const success: boolean = this.service.loadNeuralModel(buf);
       if (!success) {
-        this.compressStatus = 'Failed to load neural model weights';
+        this.compressStatus = `Failed to load ${filename}`;
         this.compressIsError = true;
       }
     } catch (e) {
@@ -331,7 +330,9 @@ struct Index {
                 this.service.setBackend(opt.id, opt.modelId);
                 // Auto-load neural model weights if needed
                 if (opt.id === BACKEND_NEURAL_GRU) {
-                  this.loadNeuralWeights();
+                  this.loadModelWeights('gru_weights.bin');
+                } else if (opt.id === BACKEND_RWKV) {
+                  this.loadModelWeights('rwkv_weights.bin');
                 }
                 this.refreshInfo();
               }

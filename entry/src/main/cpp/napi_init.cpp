@@ -1,10 +1,12 @@
 #include <napi/native_api.h>
 #include "ppm_engine.h"
 #include "neural_engine.h"
+#include "rwkv_engine.h"
 
 // Global engine instances
 static PPMEngine g_engine;
 static GRUEngine g_neural;
+static RWKVEngine g_rwkv;
 
 static napi_value PpmReset(napi_env env, napi_callback_info info) {
     g_engine.reset();
@@ -175,6 +177,61 @@ static napi_value NnIsLoaded(napi_env env, napi_callback_info info) {
 }
 
 // Module initialization
+// === RWKV Backend ===
+
+static napi_value RwLoadModel(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    void* data = nullptr; size_t length = 0;
+    napi_get_arraybuffer_info(env, argv[0], &data, &length);
+    bool ok = g_rwkv.loadWeights(static_cast<const uint8_t*>(data), length);
+    napi_value result; napi_get_boolean(env, ok, &result);
+    return result;
+}
+
+static napi_value RwReset(napi_env env, napi_callback_info info) { g_rwkv.reset(); return nullptr; }
+
+static napi_value RwGetFrequency(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    double d = 0; napi_get_value_double(env, argv[0], &d);
+    int cumLow = 0, cumHigh = 0;
+    g_rwkv.getFrequency((int)d, cumLow, cumHigh);
+    napi_value result; napi_create_array_with_length(env, 2, &result);
+    napi_value v0, v1;
+    napi_create_double(env, (double)cumLow, &v0); napi_create_double(env, (double)cumHigh, &v1);
+    napi_set_element(env, result, 0, v0); napi_set_element(env, result, 1, v1);
+    return result;
+}
+
+static napi_value RwGetTotal(napi_env env, napi_callback_info info) {
+    napi_value r; napi_create_double(env, (double)g_rwkv.getTotal(), &r); return r;
+}
+
+static napi_value RwFindSymbol(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    double d = 0; napi_get_value_double(env, argv[0], &d);
+    int sym = 0, cumLow = 0, cumHigh = 0;
+    g_rwkv.findSymbol((int)d, sym, cumLow, cumHigh);
+    napi_value result; napi_create_array_with_length(env, 3, &result);
+    napi_value v0, v1, v2;
+    napi_create_double(env, (double)sym, &v0); napi_create_double(env, (double)cumLow, &v1); napi_create_double(env, (double)cumHigh, &v2);
+    napi_set_element(env, result, 0, v0); napi_set_element(env, result, 1, v1); napi_set_element(env, result, 2, v2);
+    return result;
+}
+
+static napi_value RwUpdate(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    double d = 0; napi_get_value_double(env, argv[0], &d);
+    g_rwkv.update((int)d); return nullptr;
+}
+
+static napi_value RwIsLoaded(napi_env env, napi_callback_info info) {
+    napi_value r; napi_get_boolean(env, g_rwkv.isLoaded(), &r); return r;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         // PPM backend
@@ -191,6 +248,14 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"nnFindSymbol", nullptr, NnFindSymbol, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"nnUpdate", nullptr, NnUpdate, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"nnIsLoaded", nullptr, NnIsLoaded, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // RWKV backend
+        {"rwLoadModel", nullptr, RwLoadModel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwReset", nullptr, RwReset, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwGetFrequency", nullptr, RwGetFrequency, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwGetTotal", nullptr, RwGetTotal, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwFindSymbol", nullptr, RwFindSymbol, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwUpdate", nullptr, RwUpdate, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rwIsLoaded", nullptr, RwIsLoaded, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

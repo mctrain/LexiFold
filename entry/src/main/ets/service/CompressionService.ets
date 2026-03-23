@@ -4,14 +4,14 @@ import {
   CompressionProfile, CompressionResult, DecompressionResult,
   CompressWithDataResult, RoundTripResult, Preprocessor,
   BackendOption, PreprocessorOption,
-  BACKEND_NEURAL_GRU,
+  BACKEND_NEURAL_GRU, BACKEND_RWKV,
   getDefaultProfile, getBackendName, getTokenizerName, getPreprocessorName,
   getAvailableBackends, getAvailablePreprocessors,
   FILE_EXTENSION
 } from '../core/Types';
 import { ByteTokenizer } from '../core/Tokenizer';
 import { createPreprocessor } from '../core/TextPreprocessor';
-import { NativeNeuralBackend } from '../core/PredictorBackend';
+import { NativeNeuralBackend, NativeRWKVBackend } from '../core/PredictorBackend';
 import { compressData, decompressData, CompressOutput, DecompressOutput } from '../core/ChunkProcessor';
 
 function makeCompressionResult(
@@ -78,14 +78,14 @@ export class CompressionService {
     };
   }
 
-  // Load neural model weights (call before using BACKEND_NEURAL_GRU)
+  // Load model weights (call before using neural/RWKV backends)
   loadNeuralModel(weightsBuffer: ArrayBuffer): boolean {
+    if (this.profile.backendId === BACKEND_RWKV) {
+      const backend = new NativeRWKVBackend();
+      return backend.loadModel(weightsBuffer);
+    }
     const backend = new NativeNeuralBackend();
     return backend.loadModel(weightsBuffer);
-  }
-
-  isNeuralModelNeeded(): boolean {
-    return this.profile.backendId === BACKEND_NEURAL_GRU;
   }
 
   setPreprocessor(preprocessorId: number): void {

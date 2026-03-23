@@ -6,9 +6,9 @@ import {
   PredictorBackend, FrequencyInfo, SymbolInfo,
   BYTE_VOCAB_SIZE, MAX_TOTAL_FREQ,
   BACKEND_CPU_REFERENCE, BACKEND_MOCK_STEP, BACKEND_CPU_ORDER1,
-  BACKEND_NATIVE_PPM, BACKEND_NEURAL_GRU,
+  BACKEND_NATIVE_PPM, BACKEND_NEURAL_GRU, BACKEND_RWKV,
   MODEL_ORDER0_ADAPTIVE, MODEL_ORDER1_ADAPTIVE, MODEL_PPM_ORDER3,
-  MODEL_GRU_CHAR, MODEL_NONE
+  MODEL_GRU_CHAR, MODEL_RWKV_BYTE, MODEL_NONE
 } from './Types';
 import nativeModule from 'liblexifold_native.so';
 
@@ -304,6 +304,47 @@ export class NativeNeuralBackend implements PredictorBackend {
   }
 }
 
+// === Native RWKV Backend ===
+
+export class NativeRWKVBackend implements PredictorBackend {
+  readonly id: number = BACKEND_RWKV;
+  readonly modelId: number = MODEL_RWKV_BYTE;
+  readonly name: string = 'RWKV v4 (Native C++)';
+  readonly vocabSize: number = BYTE_VOCAB_SIZE;
+  private modelLoaded: boolean = false;
+
+  constructor() {
+    this.modelLoaded = nativeModule.rwIsLoaded();
+  }
+
+  loadModel(weightsBuffer: ArrayBuffer): boolean {
+    this.modelLoaded = nativeModule.rwLoadModel(weightsBuffer);
+    return this.modelLoaded;
+  }
+
+  isModelLoaded(): boolean {
+    return this.modelLoaded;
+  }
+
+  reset(): void { nativeModule.rwReset(); }
+
+  getFrequency(symbol: number): FrequencyInfo {
+    const arr: number[] = nativeModule.rwGetFrequency(symbol);
+    const fi: FrequencyInfo = { cumLow: arr[0], cumHigh: arr[1] };
+    return fi;
+  }
+
+  getTotal(): number { return nativeModule.rwGetTotal(); }
+
+  findSymbol(scaledValue: number): SymbolInfo {
+    const arr: number[] = nativeModule.rwFindSymbol(scaledValue);
+    const si: SymbolInfo = { symbol: arr[0], cumLow: arr[1], cumHigh: arr[2] };
+    return si;
+  }
+
+  update(symbol: number): void { nativeModule.rwUpdate(symbol); }
+}
+
 // === Backend Factory ===
 
 export function createBackend(backendId: number): PredictorBackend {
@@ -315,6 +356,8 @@ export function createBackend(backendId: number): PredictorBackend {
     return new NativePPMBackend();
   } else if (backendId === BACKEND_NEURAL_GRU) {
     return new NativeNeuralBackend();
+  } else if (backendId === BACKEND_RWKV) {
+    return new NativeRWKVBackend();
   } else if (backendId === BACKEND_MOCK_STEP) {
     return new MockStepModelBackend();
   }
